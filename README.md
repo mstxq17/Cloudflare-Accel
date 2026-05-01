@@ -83,6 +83,24 @@
 | `RESTRICT_PATHS`  | 是否限制 GitHub 和 Docker 请求的路径，`true` 要求路径匹配 `ALLOWED_PATHS`，`false` 允许所有路径 | `false`                                                              |
 | `ALLOWED_PATHS`   | 允许的 GitHub 和 Docker 路径关键字，仅当 `RESTRICT_PATHS = true` 时生效 | `['library', 'user-id-1', 'user-id-2']`（建议添加 `cloudflare`）     |
 
+## KV 后台管理
+
+1. 在 Cloudflare Workers / Pages 中绑定一个 KV Namespace，变量名支持：`CONFIG_KV`、`CF_ACCEL_KV`、`ACCEL_KV` 或 `KV`。
+2. 设置环境变量 `ADMIN` 作为后台登录密码。
+3. 访问 `https://your-domain/login` 登录，进入 `/admin` 后可配置：
+   - 是否开启 GitHub 加速
+   - 是否开启 Docker 镜像加速
+   - 是否启用 GitHub 前缀限制
+   - GitHub 允许前缀（每行一个；默认限制为 `https://github.com/mstxq17/`；如需不限制，请在后台关闭“启用 GitHub 前缀限制”）
+
+GitHub 前缀示例：
+
+```text
+https://github.com/mstxq17/
+```
+
+配置该前缀后，仅允许代理 `https://github.com/mstxq17/` 开头的 GitHub 链接。
+
 ### 修改白名单
 - **添加新域名**：编辑 `ALLOWED_HOSTS`，如添加 `docker.io`：
   ```javascript
