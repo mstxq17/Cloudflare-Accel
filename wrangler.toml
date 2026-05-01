@@ -1,0 +1,10 @@
+name = "cloudflare-accel"
+main = "_worker.js"
+compatibility_date = "2026-05-01"
+
+# 如果需要使用后台配置，请在 Cloudflare 控制台或 wrangler 中绑定 KV Namespace。
+# 代码会按以下绑定名自动查找：CONFIG_KV / CF_ACCEL_KV / ACCEL_KV / KV。
+# 示例（部署前替换为你自己的 namespace_id）：
+# [[kv_namespaces]]
+# binding = "CONFIG_KV"
+# id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
