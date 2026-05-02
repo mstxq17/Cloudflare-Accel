@@ -379,7 +379,7 @@ const HOMEPAGE_HTML = `
     const currentHost = window.location.host;
     const currentOrigin = window.location.origin;
     const githubHosts = ['github.com', 'api.github.com', 'raw.githubusercontent.com', 'gist.github.com', 'gist.githubusercontent.com'];
-    const accelSettings = { githubEnabled: true, dockerEnabled: true, githubPrefixLimitEnabled: true, githubAllowedPrefixes: ['https://github.com/mstxq17/'], shortLinkEnabled: true, shortLinkTtlHours: 24, shortLinkCodeLength: 6 };
+    const accelSettings = __ACCEL_SETTINGS__;
 
     // 主题切换
     function toggleTheme() {
@@ -1109,8 +1109,8 @@ function renderAdminPage(settings, options = {}) {
 function renderHomePage(settings) {
   const githubStatus = !settings.githubEnabled
     ? '<div class="status-pill status-off">GitHub 已关闭</div>'
-    : settings.githubPrefixLimitEnabled && settings.githubAllowedPrefixes.length
-      ? `<div class="status-pill status-warn">仅允许：${settings.githubAllowedPrefixes.map(escapeHtml).join('，')}</div>`
+    : settings.githubPrefixLimitEnabled
+      ? '<div class="status-pill status-warn">GitHub 前缀限制已开启</div>'
       : '<div class="status-pill status-ok">GitHub 已开启</div>';
   const shortLinkStatus = !settings.shortLinkEnabled
     ? '<div class="status-pill status-off">短链接已关闭</div>'
@@ -1121,7 +1121,7 @@ function renderHomePage(settings) {
 
   return HOMEPAGE_HTML
     .replace(
-      `const accelSettings = { githubEnabled: true, dockerEnabled: true, githubPrefixLimitEnabled: true, githubAllowedPrefixes: ['https://github.com/mstxq17/'] };`,
+      'const accelSettings = __ACCEL_SETTINGS__;',
       `const accelSettings = ${JSON.stringify(settings)};`
     )
     .replace(
