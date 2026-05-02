@@ -50,13 +50,21 @@ const ALLOWED_PATHS = [
 // 2. 设置环境变量 ADMIN 作为后台密码。
 // 3. 访问 /login 登录，/admin 管理开关和 GitHub 允许前缀。
 const SETTINGS_KV_KEY = 'cloudflare-accel:settings';
+const SHORT_LINK_KV_PREFIX = 'cloudflare-accel:shortlink:';
+const SHORT_LINK_URL_INDEX_PREFIX = 'cloudflare-accel:shortlink:url:';
 const SESSION_COOKIE_NAME = 'cf_accel_admin';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60;
+const SHORT_LINK_CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const DEFAULT_SHORT_LINK_TTL_HOURS = 24;
+const DEFAULT_SHORT_LINK_CODE_LENGTH = 6;
 const DEFAULT_SETTINGS = {
   githubEnabled: true,
   dockerEnabled: true,
   githubPrefixLimitEnabled: true,
-  githubAllowedPrefixes: ['https://github.com/mstxq17/']
+  githubAllowedPrefixes: ['https://github.com/mstxq17/'],
+  shortLinkEnabled: true,
+  shortLinkTtlHours: DEFAULT_SHORT_LINK_TTL_HOURS,
+  shortLinkCodeLength: DEFAULT_SHORT_LINK_CODE_LENGTH
 };
 
 const DOCKER_HOSTS = [
@@ -322,7 +330,12 @@ const HOMEPAGE_HTML = `
           获取加速链接
         </button>
       </div>
+      <label class="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300 mb-2">
+        <input id="github-generate-short" type="checkbox" class="h-4 w-4">
+        <span>同时生成短链接（默认关闭）</span>
+      </label>
       <p id="github-result" class="mt-2 text-green-600 dark:text-green-400 result-text hidden"></p>
+      <p id="github-short-result" class="mt-2 text-blue-600 dark:text-blue-300 result-text hidden"></p>
       <div id="github-buttons" class="flex gap-2 mt-2 github-buttons hidden">
         <button onclick="copyGithubUrl()" class="bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-200 px-3 py-1 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-500 transition w-full">📋 复制链接</button>
         <button onclick="openGithubUrl()" class="bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-200 px-3 py-1 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-500 transition w-full">🔗 打开链接</button>
@@ -366,7 +379,7 @@ const HOMEPAGE_HTML = `
     const currentHost = window.location.host;
     const currentOrigin = window.location.origin;
     const githubHosts = ['github.com', 'api.github.com', 'raw.githubusercontent.com', 'gist.github.com', 'gist.githubusercontent.com'];
-    const accelSettings = { githubEnabled: true, dockerEnabled: true, githubPrefixLimitEnabled: true, githubAllowedPrefixes: ['https://github.com/mstxq17/'] };
+    const accelSettings = { githubEnabled: true, dockerEnabled: true, githubPrefixLimitEnabled: true, githubAllowedPrefixes: ['https://github.com/mstxq17/'], shortLinkEnabled: true, shortLinkTtlHours: 24, shortLinkCodeLength: 6 };
 
     // 主题切换
     function toggleTheme() {
@@ -434,6 +447,7 @@ const HOMEPAGE_HTML = `
 
     // GitHub 链接转换
     let githubAcceleratedUrl = '';
+    let githubShortUrl = '';
     function normalizeGithubPrefix(prefix) {
       try {
         const url = new URL(String(prefix || '').trim());
@@ -477,16 +491,20 @@ const HOMEPAGE_HTML = `
     function convertGithubUrl() {
       const input = document.getElementById('github-url').value.trim();
       const result = document.getElementById('github-result');
+      const shortResult = document.getElementById('github-short-result');
+      const shouldGenerateShort = document.getElementById('github-generate-short').checked;
       const buttons = document.getElementById('github-buttons');
       if (!input) {
         showToast('请输入有效的 GitHub 链接', true);
         result.classList.add('hidden');
+        shortResult.classList.add('hidden');
         buttons.classList.add('hidden');
         return;
       }
       if (!input.startsWith('https://')) {
         showToast('链接必须以 https:// 开头', true);
         result.classList.add('hidden');
+        shortResult.classList.add('hidden');
         buttons.classList.add('hidden');
         return;
       }
@@ -495,24 +513,32 @@ const HOMEPAGE_HTML = `
       if (!allowResult.allowed) {
         showToast(allowResult.message, true);
         result.classList.add('hidden');
+        shortResult.classList.add('hidden');
         buttons.classList.add('hidden');
         return;
       }
 
       // 保持现有格式：域名/https://原始链接
       githubAcceleratedUrl = currentOrigin + '/https://' + input.substring(8);
+      githubShortUrl = '';
       result.textContent = '加速链接: ' + githubAcceleratedUrl;
       result.classList.remove('hidden');
+      shortResult.classList.add('hidden');
+      shortResult.textContent = '';
       buttons.classList.remove('hidden');
       copyToClipboard(githubAcceleratedUrl).then(() => {
         showToast('已复制到剪贴板');
       }).catch(err => {
         showToast('复制失败: ' + err.message, true);
       });
+
+      if (shouldGenerateShort && accelSettings.shortLinkEnabled) {
+        generateGithubShortLink();
+      }
     }
 
     function copyGithubUrl() {
-      copyToClipboard(githubAcceleratedUrl).then(() => {
+      copyToClipboard(githubShortUrl || githubAcceleratedUrl).then(() => {
         showToast('已手动复制到剪贴板');
       }).catch(err => {
         showToast('手动复制失败: ' + err.message, true);
@@ -527,6 +553,56 @@ const HOMEPAGE_HTML = `
         return;
       }
       window.open(githubAcceleratedUrl, '_blank');
+    }
+
+    async function generateGithubShortLink() {
+      const input = document.getElementById('github-url').value.trim();
+      const shortResult = document.getElementById('github-short-result');
+      const allowResult = isGithubInputAllowed(input);
+      if (!allowResult.allowed) {
+        showToast(allowResult.message, true);
+        return;
+      }
+      if (!accelSettings.shortLinkEnabled) {
+        showToast('后台已关闭短链接功能', true);
+        return;
+      }
+      if (!document.getElementById('github-generate-short').checked) {
+        showToast('请先勾选“同时生成短链接”', true);
+        return;
+      }
+      if (!githubAcceleratedUrl) {
+        convertGithubUrl();
+        if (!githubAcceleratedUrl) {
+          return;
+        }
+      }
+
+      try {
+        const response = await fetch('/api/shorten', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ url: input })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || '生成短链接失败');
+        }
+
+        githubShortUrl = data.shortUrl || '';
+        shortResult.textContent = '短链接: ' + githubShortUrl + '（有效期 ' + (data.ttlHours || accelSettings.shortLinkTtlHours) + ' 小时）';
+        shortResult.classList.remove('hidden');
+        copyToClipboard(githubShortUrl).then(() => {
+          showToast('短链接已复制到剪贴板');
+        }).catch(err => {
+          showToast('短链接复制失败: ' + err.message, true);
+        });
+      } catch (error) {
+        shortResult.classList.add('hidden');
+        showToast(error.message || '生成短链接失败', true);
+      }
     }
 
     // Docker 镜像转换
@@ -603,6 +679,8 @@ function normalizeSettings(settings = {}) {
   const prefixes = Array.isArray(settings.githubAllowedPrefixes)
     ? settings.githubAllowedPrefixes
     : [];
+  const shortLinkTtlHours = Number.parseInt(settings.shortLinkTtlHours, 10);
+  const shortLinkCodeLength = Number.parseInt(settings.shortLinkCodeLength, 10);
 
   return {
     githubEnabled: settings.githubEnabled !== false,
@@ -610,7 +688,14 @@ function normalizeSettings(settings = {}) {
     githubPrefixLimitEnabled: settings.githubPrefixLimitEnabled !== false,
     githubAllowedPrefixes: prefixes
       .map(prefix => normalizeGithubPrefix(prefix))
-      .filter(Boolean)
+      .filter(Boolean),
+    shortLinkEnabled: settings.shortLinkEnabled !== false,
+    shortLinkTtlHours: Number.isFinite(shortLinkTtlHours)
+      ? Math.min(24 * 365, Math.max(1, shortLinkTtlHours))
+      : DEFAULT_SHORT_LINK_TTL_HOURS,
+    shortLinkCodeLength: Number.isFinite(shortLinkCodeLength)
+      ? Math.min(32, Math.max(4, shortLinkCodeLength))
+      : DEFAULT_SHORT_LINK_CODE_LENGTH
   };
 }
 
@@ -669,6 +754,116 @@ function parseGithubPrefixes(value) {
     .map(prefix => normalizeGithubPrefix(prefix))
     .filter(Boolean)
     .filter((prefix, index, all) => all.indexOf(prefix) === index);
+}
+
+function getShortLinkKey(code) {
+  return `${SHORT_LINK_KV_PREFIX}${code}`;
+}
+
+function getShortLinkUrlIndexKey(urlHash) {
+  return `${SHORT_LINK_URL_INDEX_PREFIX}${urlHash}`;
+}
+
+function generateRandomCode(length) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += SHORT_LINK_CHARSET[bytes[i] % SHORT_LINK_CHARSET.length];
+  }
+  return code;
+}
+
+function buildGithubAcceleratedUrl(requestUrl, githubUrl) {
+  const siteUrl = new URL(requestUrl);
+  return `${siteUrl.origin}/https://${githubUrl.substring(8)}`;
+}
+
+async function sha256Hex(value) {
+  const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(value)));
+  return Array.from(new Uint8Array(buffer))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function validateGithubInputForShortLink(input, settings) {
+  const raw = String(input || '').trim();
+  if (!settings.githubEnabled) {
+    return { ok: false, message: 'GitHub 加速已关闭', status: 403 };
+  }
+  if (!raw.startsWith('https://')) {
+    return { ok: false, message: '链接必须以 https:// 开头', status: 400 };
+  }
+
+  const normalizedInput = normalizeGithubPrefix(raw);
+  if (!normalizedInput) {
+    return { ok: false, message: '请输入有效的 GitHub 链接', status: 400 };
+  }
+
+  if (
+    settings.githubPrefixLimitEnabled &&
+    !isAllowedGithubPrefix(raw, settings.githubAllowedPrefixes)
+  ) {
+    return { ok: false, message: '该 GitHub 链接不在允许前缀内', status: 403 };
+  }
+
+  return { ok: true, normalizedInput: raw };
+}
+
+async function createShortLink(env, settings, targetUrl) {
+  const kv = getConfigKV(env);
+  if (!kv) {
+    throw new Error('未绑定 KV Namespace，无法生成短链接');
+  }
+
+  const ttlSeconds = settings.shortLinkTtlHours * 60 * 60;
+  const urlHash = await sha256Hex(targetUrl);
+  const indexKey = getShortLinkUrlIndexKey(urlHash);
+  const existingCode = await kv.get(indexKey);
+  if (existingCode) {
+    const existingPayload = await kv.get(getShortLinkKey(existingCode), 'json');
+    if (existingPayload && existingPayload.url === targetUrl) {
+      const refreshedPayload = {
+        ...existingPayload,
+        ttlHours: settings.shortLinkTtlHours,
+        refreshedAt: new Date().toISOString()
+      };
+      await kv.put(getShortLinkKey(existingCode), JSON.stringify(refreshedPayload), { expirationTtl: ttlSeconds });
+      await kv.put(indexKey, existingCode, { expirationTtl: ttlSeconds });
+      return { code: existingCode, ttlHours: settings.shortLinkTtlHours, reused: true };
+    }
+  }
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = generateRandomCode(settings.shortLinkCodeLength);
+    const existing = await kv.get(getShortLinkKey(code), 'json');
+    if (existing) {
+      continue;
+    }
+
+    const payload = {
+      url: targetUrl,
+      createdAt: new Date().toISOString(),
+      ttlHours: settings.shortLinkTtlHours
+    };
+    await kv.put(getShortLinkKey(code), JSON.stringify(payload), { expirationTtl: ttlSeconds });
+    await kv.put(indexKey, code, { expirationTtl: ttlSeconds });
+    return { code, ttlHours: settings.shortLinkTtlHours, reused: false };
+  }
+
+  throw new Error('短链接生成冲突过多，请稍后重试');
+}
+
+async function resolveShortLink(env, code) {
+  const kv = getConfigKV(env);
+  if (!kv) {
+    return null;
+  }
+  const value = await kv.get(getShortLinkKey(code), 'json');
+  if (!value || typeof value.url !== 'string') {
+    return null;
+  }
+  return value;
 }
 
 function isGithubRequest(targetDomain, isDockerRequest) {
@@ -856,6 +1051,39 @@ function renderAdminPage(settings, options = {}) {
           <input type="checkbox" name="githubPrefixLimitEnabled" class="h-5 w-5" ${settings.githubPrefixLimitEnabled ? 'checked' : ''}>
           <span>启用 GitHub 前缀限制</span>
         </label>
+        <label class="flex items-center gap-3">
+          <input type="checkbox" name="shortLinkEnabled" class="h-5 w-5" ${settings.shortLinkEnabled ? 'checked' : ''}>
+          <span>开启 GitHub 短链接功能</span>
+        </label>
+      </section>
+
+      <section class="border rounded-lg p-4 space-y-3">
+        <h2 class="font-semibold text-lg">短链接配置</h2>
+        <p class="text-sm text-gray-600">短链接仅用于 GitHub 加速链接生成，使用同一个 KV 存储。默认 24 小时、6 位大小写字母数字。</p>
+        <div class="grid md:grid-cols-2 gap-4">
+          <label class="block">
+            <span class="text-sm text-gray-700">有效期（小时）</span>
+            <input
+              name="shortLinkTtlHours"
+              type="number"
+              min="1"
+              max="${24 * 365}"
+              value="${settings.shortLinkTtlHours}"
+              class="mt-1 w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+          </label>
+          <label class="block">
+            <span class="text-sm text-gray-700">短链长度</span>
+            <input
+              name="shortLinkCodeLength"
+              type="number"
+              min="4"
+              max="32"
+              value="${settings.shortLinkCodeLength}"
+              class="mt-1 w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+          </label>
+        </div>
       </section>
 
       <section class="border rounded-lg p-4 space-y-3">
@@ -884,6 +1112,9 @@ function renderHomePage(settings) {
     : settings.githubPrefixLimitEnabled && settings.githubAllowedPrefixes.length
       ? `<div class="status-pill status-warn">仅允许：${settings.githubAllowedPrefixes.map(escapeHtml).join('，')}</div>`
       : '<div class="status-pill status-ok">GitHub 已开启</div>';
+  const shortLinkStatus = !settings.shortLinkEnabled
+    ? '<div class="status-pill status-off">短链接已关闭</div>'
+    : `<div class="status-pill status-ok">短链接已开启：${settings.shortLinkCodeLength} 位 / ${settings.shortLinkTtlHours} 小时</div>`;
   const dockerStatus = !settings.dockerEnabled
     ? '<div class="status-pill status-off">Docker 已关闭</div>'
     : '<div class="status-pill status-ok">Docker 已开启</div>';
@@ -895,7 +1126,7 @@ function renderHomePage(settings) {
     )
     .replace(
       '<p class="text-gray-600 dark:text-gray-300 mb-4">输入 GitHub 文件链接，自动转换为加速链接。也可以直接在链接前加上本站域名使用。</p>',
-      `<p class="text-gray-600 dark:text-gray-300 mb-4">输入 GitHub 文件链接，自动转换为加速链接。也可以直接在链接前加上本站域名使用。</p>${githubStatus}`
+      `<p class="text-gray-600 dark:text-gray-300 mb-4">输入 GitHub 文件链接，自动转换为加速链接。也可以直接在链接前加上本站域名使用。</p>${githubStatus}${shortLinkStatus}`
     )
     .replace(
       '<p class="text-gray-600 dark:text-gray-300 mb-4">输入原镜像地址（如 hello-world 或 ghcr.io/user/repo），获取加速拉取命令。</p>',
@@ -961,7 +1192,10 @@ async function handleAdminRoutes(request, env, path) {
         githubEnabled: form.get('githubEnabled') === 'on',
         dockerEnabled: form.get('dockerEnabled') === 'on',
         githubPrefixLimitEnabled: form.get('githubPrefixLimitEnabled') === 'on',
-        githubAllowedPrefixes: parseGithubPrefixes(form.get('githubAllowedPrefixes'))
+        githubAllowedPrefixes: parseGithubPrefixes(form.get('githubAllowedPrefixes')),
+        shortLinkEnabled: form.get('shortLinkEnabled') === 'on',
+        shortLinkTtlHours: form.get('shortLinkTtlHours'),
+        shortLinkCodeLength: form.get('shortLinkCodeLength')
       });
 
       try {
@@ -1166,6 +1400,64 @@ async function handleRequest(request, env) {
       status: 200,
       headers: { 'Content-Type': 'image/svg+xml; charset=utf-8' }
     });
+  }
+
+  if (path === '/api/shorten') {
+    if (request.method !== 'POST') {
+      return new Response('Method Not Allowed\n', { status: 405 });
+    }
+    if (!settings.shortLinkEnabled) {
+      return new Response(JSON.stringify({ error: '短链接功能已关闭' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+      });
+    }
+
+    try {
+      const body = await request.json();
+      const validation = validateGithubInputForShortLink(body?.url, settings);
+      if (!validation.ok) {
+        return new Response(JSON.stringify({ error: validation.message }), {
+          status: validation.status,
+          headers: { 'Content-Type': 'application/json; charset=utf-8' }
+        });
+      }
+
+      const acceleratedUrl = buildGithubAcceleratedUrl(request.url, validation.normalizedInput);
+      const short = await createShortLink(env, settings, acceleratedUrl);
+      return new Response(JSON.stringify({
+        shortUrl: `${url.origin}/s/${short.code}`,
+        code: short.code,
+        ttlHours: short.ttlHours,
+        reused: short.reused === true
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({ error: error.message || '生成短链接失败' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+      });
+    }
+  }
+
+  if (path.startsWith('/s/')) {
+    if (!settings.shortLinkEnabled) {
+      return new Response('Error: Short link feature is disabled.\n', { status: 403 });
+    }
+
+    const code = path.slice(3).trim();
+    if (!/^[A-Za-z0-9]{4,32}$/.test(code)) {
+      return new Response('Error: Invalid short link code.\n', { status: 400 });
+    }
+
+    const shortLink = await resolveShortLink(env, code);
+    if (!shortLink) {
+      return new Response('Error: Short link not found or expired.\n', { status: 404 });
+    }
+
+    return redirectResponse(shortLink.url);
   }
 
   // Docker 客户端会先请求 /v2/ 探测 Registry API，必须返回 200，

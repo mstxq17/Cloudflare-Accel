@@ -1,8 +1,8 @@
 # Cloudflare-Accel
-基于 Cloudflare Workers 的 GitHub 和 Docker 加速服务，自动生成加速链接与命令。
+基于 Cloudflare Workers 的 GitHub 和 Docker 加速服务，自动生成加速链接、可选短链接与命令。
 # Cloudflare-Accel
 
-是一个基于 Cloudflare Workers 或 Cloudflare Pages 的反向代理服务，旨在加速 GitHub 文件下载和 Docker 镜像拉取。通过 Cloudflare 的全球边缘网络，提供更快、更稳定的下载体验。项目提供直观的网页界面，支持将 GitHub 文件链接和 Docker 镜像地址转换为加速链接或命令，并自动复制到剪贴板。界面针对 PC 和移动端（iPhone、Android）进行了优化，加速链接支持换行，复制功能兼容主流浏览器，GitHub 请求通过反向代理实现加速。
+是一个基于 Cloudflare Workers 或 Cloudflare Pages 的反向代理服务，旨在加速 GitHub 文件下载和 Docker 镜像拉取。通过 Cloudflare 的全球边缘网络，提供更快、更稳定的下载体验。项目提供直观的网页界面，支持将 GitHub 文件链接和 Docker 镜像地址转换为加速链接、可选短链接或命令，并自动复制到剪贴板。界面针对 PC 和移动端（iPhone、Android）进行了优化，加速链接支持换行，复制功能兼容主流浏览器，GitHub 请求通过反向代理实现加速。
 
 ## 目录
 
@@ -18,6 +18,7 @@
 ## 特点
 
 - ⚡ GitHub 文件加速（反向代理），支持 `https://` 或 `http://` 链接输入，输出加速链接保留原始协议
+- ✂️ GitHub 短链接功能，可在前端勾选后生成，默认 24 小时、6 位大小写字母数字短码
 - 🐳 Docker 镜像加速（反向代理）
 - 🎨 现代化 UI，适配 PC 和移动端（iPhone、Android），加速链接支持换行
 - 📋 复制功能兼容 PC、iPhone 和 Android 浏览器
@@ -83,6 +84,8 @@
 | `RESTRICT_PATHS`  | 是否限制 GitHub 和 Docker 请求的路径，`true` 要求路径匹配 `ALLOWED_PATHS`，`false` 允许所有路径 | `false`                                                              |
 | `ALLOWED_PATHS`   | 允许的 GitHub 和 Docker 路径关键字，仅当 `RESTRICT_PATHS = true` 时生效 | `['library', 'user-id-1', 'user-id-2']`（建议添加 `cloudflare`）     |
 
+> 短链接相关配置不通过源码常量维护，而是通过 KV 后台动态配置。
+
 ## KV 后台管理
 
 1. 在 Cloudflare Workers / Pages 中绑定一个 KV Namespace，变量名支持：`CONFIG_KV`、`CF_ACCEL_KV`、`ACCEL_KV` 或 `KV`。
@@ -90,8 +93,23 @@
 3. 访问 `https://your-domain/login` 登录，进入 `/admin` 后可配置：
    - 是否开启 GitHub 加速
    - 是否开启 Docker 镜像加速
+   - 是否开启 GitHub 短链接功能
+   - 短链接有效期（小时，默认 `24`）
+   - 短链接长度（默认 `6`，可配置，字符集为大小写字母与数字）
    - 是否启用 GitHub 前缀限制
    - GitHub 允许前缀（每行一个；默认限制为 `https://github.com/mstxq17/`；如需不限制，请在后台关闭“启用 GitHub 前缀限制”）
+
+### 短链接说明
+
+- 前端默认**不勾选**短链接。
+- 用户勾选“同时生成短链接（默认关闭）”后，点击“获取加速链接”才会调用短链接口。
+- 短链仅用于 **GitHub 加速链接**。
+- 同一个目标加速地址会**复用同一个短码**，再次生成时会**刷新有效期**，不会重复创建新短码。
+- 短链接访问路径格式：
+
+```text
+https://your-domain/s/Ab3xYz
+```
 
 GitHub 前缀示例：
 
@@ -134,6 +152,25 @@ https://github.com/mstxq17/
    - **行为**：
      - 自动复制加速链接（支持 PC、iPhone、Android），弹窗提示“已复制到剪贴板”。
      - 显示 📋 复制 和 🔗 打开 按钮，移动端链接换行显示，避免溢出。
+     - 若勾选“同时生成短链接（默认关闭）”，会额外生成短链并自动复制。
+   - **短链示例**：
+     - 原始 GitHub 链接：`https://github.com/cloudflare/cloudflared/releases/download/2025.7.0/cloudflared-linux-amd64`
+     - 加速链接：`https://your-domain/https://github.com/cloudflare/cloudflared/releases/download/2025.7.0/cloudflared-linux-amd64`
+     - 短链接：`https://your-domain/s/Ab3xYz`
+   - **短链接口**：
+     ```bash
+     curl -X POST https://your-domain/api/shorten \
+       -H 'Content-Type: application/json' \
+       -d '{"url":"https://github.com/cloudflare/cloudflared/releases/download/2025.7.0/cloudflared-linux-amd64"}'
+     ```
+     返回示例：
+     ```json
+     {"shortUrl":"https://your-domain/s/Ab3xYz","code":"Ab3xYz","ttlHours":24,"reused":false}
+     ```
+   - **同目标重复生成**：
+     - 再次对同一地址调用 `/api/shorten` 时，会返回同一个 `code`
+     - `reused` 将为 `true`
+     - KV 中该短链的过期时间会刷新
    - **测试（反向代理）**：
      ```bash
      curl -I https://your-domain/https://github.com/cloudflare/cloudflared/releases/download/2025.7.0/cloudflared-linux-amd64
