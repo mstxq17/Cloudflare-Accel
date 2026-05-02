@@ -870,6 +870,14 @@ function isGithubRequest(targetDomain, isDockerRequest) {
   return !isDockerRequest && GITHUB_HOSTS.includes(targetDomain);
 }
 
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function rewriteGithubBlobToRaw(targetUrl) {
   try {
     const url = new URL(targetUrl);
@@ -882,16 +890,39 @@ function rewriteGithubBlobToRaw(targetUrl) {
       return targetUrl;
     }
 
-    const [owner, repo, , branch, ...fileParts] = parts;
-    if (!owner || !repo || !branch || fileParts.length === 0) {
+    const [owner, repo, routeType, ...restParts] = parts;
+    if (!owner || !repo || !routeType || restParts.length < 2) {
       return targetUrl;
     }
 
-    const rawPath = [owner, repo, branch, ...fileParts].map(encodeURIComponent).join('/');
-    return `https://raw.githubusercontent.com/${rawPath}${url.search}`;
+    // 直接改写到 github.com 的 /raw/ 路由，避免对已编码路径二次编码，
+    // 同时把 branch 名中可能出现的 "/" 交给 GitHub 自身路由解析。
+    return `https://github.com/${owner}/${repo}/raw/${restParts.join('/')}${url.search}`;
   } catch {
     return targetUrl;
   }
+}
+
+function normalizeGithubUrlForPrefixCheck(targetUrl) {
+  try {
+    const url = new URL(targetUrl);
+
+    if (url.hostname === 'raw.githubusercontent.com') {
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length >= 4) {
+        const [owner, repo, ...restParts] = parts;
+        return `https://github.com/${owner}/${repo}/${restParts.join('/')}${url.search}`;
+      }
+    }
+
+    if (url.hostname === 'github.com') {
+      return targetUrl;
+    }
+  } catch {
+    return targetUrl;
+  }
+
+  return targetUrl;
 }
 
 function isAllowedGithubPrefix(targetUrl, prefixes) {
@@ -899,7 +930,7 @@ function isAllowedGithubPrefix(targetUrl, prefixes) {
     return true;
   }
 
-  const normalizedTarget = normalizeGithubPrefix(targetUrl);
+  const normalizedTarget = normalizeGithubPrefix(normalizeGithubUrlForPrefixCheck(targetUrl));
   return prefixes.some(prefix => normalizedTarget.startsWith(prefix));
 }
 
@@ -915,7 +946,7 @@ function parseCookies(request) {
         if (index === -1) {
           return [part, ''];
         }
-        return [part.slice(0, index), decodeURIComponent(part.slice(index + 1))];
+        return [part.slice(0, index), safeDecodeURIComponent(part.slice(index + 1))];
       })
   );
 }
